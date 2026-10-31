@@ -26,11 +26,13 @@ struct SimU {
   pad0: u32,
   steps: u32,              // simulation steps in this frame
   pad1: u32,
-  sun: vec4f,              // towards the sun
+  site: vec4f,             // a terrarium's site: up there, in the planet's frame (shape_box.wgsl)
   inoc: array<vec4f, 128>, // pairs: (x, y, z, organism), (mode, 0, 0, 0)
   brush: vec4f,            // the player's brush: where (xyz), radius
   brushOp: vec4f,          // what it does (1 water, 2 dry, 3 feed, 4 deplete), strength
-  slimeAt: vec4f,          // a slime mould set down: where (octEncode), agents, request (slimesim.wgsl)
+  slimeAt: vec4f,          // a slime mould set down: where (slimeAtKey), agents, request (slimesim.wgsl)
+  siteX: vec4f,            // the terrarium's x and z axes there, in the planet's frame
+  siteZ: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> sim: SimU;
@@ -155,17 +157,10 @@ fn rdir() -> vec3f {
 }
 
 fn world(p: vec3f) -> vec4f { return textureSampleLevel(vol, linSamp, volUVW(p), 0.0); }
-// how far from the centre the ground is, in p's direction; how high p is
-// above it
-fn groundR(p: vec3f) -> f32 { return PLANET_R + textureSampleLevel(ground, linSamp, groundUV(upAt(p)), 0.0).x; }
-fn aboveGround(p: vec3f) -> f32 { return length(p) - groundR(p); }
+// how high p is above the ground (groundR: the shape's)
+fn aboveGround(p: vec3f) -> f32 { return levelOf(p) - groundR(p); }
 // (v less its part along up)
 fn level(v: vec3f, up: vec3f) -> vec3f { return v - up * dot(v, up); }
-// within the shell life keeps to
-fn inLife(p: vec3f) -> bool {
-  let r2 = dot(p, p);
-  return r2 > LIFE_IN * LIFE_IN && r2 < LIFE_OUT * LIFE_OUT;
-}
 fn worldN(p: vec3f) -> vec3f {
   let e = 0.15;
   let k = vec2f(1.0, -1.0);
@@ -382,13 +377,6 @@ fn deposit(@builtin(global_invocation_id) gid: vec3u) {
   }
 }
 
-// Winds round the planet's axis, in bands: one way near the equator, the
-// other a way off it, and again nearer the poles.
-fn airFlow(p: vec3f) -> vec3f {
-  let up = upAt(p);
-  let east = cross(vec3f(0.0, 1.0, 0.0), up);
-  return east * 0.008 * cos(3.0 * asin(clamp(up.y, -1.0, 1.0)));
-}
 
 fn airAt(c: vec3i) -> f32 { return select(0.0, fieldA[F4N + f4Index(c)].x, inF4(c)); }
 
@@ -463,7 +451,7 @@ fn light(@builtin(global_invocation_id) gid: vec3u) {
     fieldA[v].z = 0.0;
     return;
   }
-  let L = sunDir(stepNo);
+  let L = sunWorld(stepNo);
   let el = dot(upAt(p), L);
   var sun = 0.0;
   if (el > -0.05) {
@@ -520,17 +508,16 @@ fn fields(@builtin(global_invocation_id) gid: vec3u) {
   let c = vec3i(gid);
   let i = f4Index(c);
   let p = BOX_MIN + (vec3f(c) + 0.5) * F4;
-  // (beyond the shell life keeps to and a voxel or two more, nothing ever
-  // changes: the two field buffers hold the same there)
-  let r2 = dot(p, p);
-  if (r2 < (LIFE_IN - 2.0 * F4) * (LIFE_IN - 2.0 * F4) || r2 > (LIFE_OUT + 2.0 * F4) * (LIFE_OUT + 2.0 * F4)) { return; }
+  // (where life never reaches, nothing ever changes: the two field buffers
+  // hold the same there)
+  if (fieldsIdle(p)) { return; }
   let dt = f32(FIELD_EVERY);
   var f = fieldA[i];
   var s = fieldA[F4N + i];
   // how damp it is: the weather here, and what was watered or dried (which
   // drifts back to the weather's over about a season)
   s.w *= exp(-dt / 6000.0);
-  f.x = clamp(climate(p, stepNo) + s.w, 0.0, 1.0);
+  f.x = clamp(climate(geo(p), stepNo) + s.w, 0.0, 1.0);
 
   // litter rots into food. The soil gets food back from above all year,
   // more where it is fertile, and the fertile ground drifts across the
@@ -554,10 +541,11 @@ fn fields(@builtin(global_invocation_id) gid: vec3u) {
   if ((wf & W_TOPSOIL) != 0u) {
     let yr = f32(stepNo / YEAR);
     let years = f32(stepNo) / f32(YEAR);
-    let q = upAt(p) * PLANET_R;
+    var q = upAt(p) * PLANET_R;
+    if (FLAT) { q = groundCoord(p, upAt(p)); }
     let fertile = mix(0.25, 1.6, smoothstep(-0.3, 0.3, fbm3(q * 0.07 + vec3f(1.1, 0.6, 0.8) * years, 73u, 3u)));
     let deep = smoothstep(0.0, 0.5, fbm3(q * 0.08 + vec3f(yr * 37.1, yr * 19.7, yr * 23.3), 71u, 3u) + 0.25);
-    f.y += (4e-4 * fertile * max(1.0 - f.y, 0.0) + leafFall(p, stepNo) * 1.0e-3 * deep * max(3.0 - f.y, 0.0)) * dt;
+    f.y += (4e-4 * fertile * max(1.0 - f.y, 0.0) + leafFall(geo(p), stepNo) * 1.0e-3 * deep * max(3.0 - f.y, 0.0)) * dt;
   }
   if ((wf & W_BARK) != 0u) { f.y += 1.2e-5 * max(3.0 - f.y, 0.0) * dt; }
 
@@ -571,7 +559,7 @@ fn fields(@builtin(global_invocation_id) gid: vec3u) {
   var ids = u32(s.z + 0.5);
   // (inside soil, rock and wood there is no air to carry spores)
   if ((wf & W_SOLID) == 0u) {
-    let src = p - (airFlow(p) - upAt(p) * SETTLE) * dt;
+    let src = p - (wind(p) - upAt(p) * SETTLE) * dt;
     air = airSample(src) * exp(-0.00075 * dt) + sporeIn;
     // parents travel with the air; settled ground keeps its own and may pick
     // up a second (in place: an upwind neighbour may already hold this pass's)
@@ -609,7 +597,7 @@ fn resetFields(@builtin(global_invocation_id) gid: vec3u) {
   let i = f4Index(vec3i(gid));
   // (light, till the light pass: none outside the shell life keeps to)
   let lit = select(0.0, 1.0, inLife(p));
-  let wet = climate(p, 0u);
+  let wet = climate(geo(p), 0u);
   fieldA[i] = vec4f(wet, nut, lit, 0.0);
   fieldB[i] = vec4f(wet, nut, lit, 0.0);
   fieldA[F4N + i] = vec4f(0.0);
@@ -725,7 +713,7 @@ fn excite(flags: u32, org: u32, id: u32, pos: vec3f) -> u32 {
     let k = f4Coord(pos);
     var stim = 0.0;
     if (inF4(k)) { stim = f32(atomicLoad(&grid[gi(GF_EXCITE, f4Index(k))])); }
-    let p = PG(org, G_PACE) + ex * min(stim, 6.0) * 0.025 + PG(org, G_DUSK) * dusk(pos, stepNo);
+    let p = PG(org, G_PACE) + ex * min(stim, 6.0) * 0.025 + PG(org, G_DUSK) * dusk(geo(pos), stepNo);
     if (p > 0.0 && rr() < p) {
       e = 255u;
       r = 255u;
@@ -742,7 +730,7 @@ fn sense(k: u32, flags: u32, pos: vec3f, counter: f32, len: f32) -> f32 {
   let v = f4Index(c);
   switch (k) {
     case 1u: { return f32(exciteOf(flags)) / 255.0; }
-    case 2u: { return nightness(pos, stepNo); }
+    case 2u: { return nightness(geo(pos), stepNo); }
     case 3u: { return clamp(sigAt(c), 0.0, 1.0); }
     case 4u: { return clamp(fieldA[v].y * 0.5, 0.0, 1.0); }
     case 5u: { return wetAt(v); }
@@ -964,9 +952,8 @@ fn grow(@builtin(global_invocation_id) gid: vec3u) {
     let clear = r + select(0.0, mossAt(np), ph > 0u && PQ(org, ph, Q_SURFACE) < -0.5);
     let w = world(np).x;
     if (w < clear) { np += worldN(np) * (clear - w); }
-    // (and stays within the shell life keeps to)
-    let rn = length(np);
-    np *= clamp(rn, LIFE_IN, LIFE_OUT) / max(rn, 1e-4);
+    // (and stays where life keeps to)
+    np = clampLife(np);
     // (where it moves to, held aside till the next step's deposit: the
     // tissue it hangs from and on reads where it was)
     cells[i].q = vec4f(np, c.q.w);
@@ -1335,8 +1322,8 @@ fn inoculate(@builtin(local_invocation_index) li: u32) {
           let rad = 0.08 * f32(k);
           let a = f32(k) * 2.39996;
           let b = basisOf(upAt(p));
-          var q = upAt(p + (b[0] * cos(a) + b[1] * sin(a)) * rad);
-          q *= groundR(q) - 0.15;
+          var q = keyOf(p + (b[0] * cos(a) + b[1] * sin(a)) * rad);
+          q = atLevel(q, groundR(q) - 0.15);
           let ow = gridAt(GF_OWNER, f4Coord(q));
           if (ow != NO_OWNER && (ow & 63u) != org && PG(ow & 63u, G_ALIVE) > 0.5 && (ow >> 6u) + 1u > best) {
             best = (ow >> 6u) + 1u;
@@ -1345,11 +1332,11 @@ fn inoculate(@builtin(local_invocation_index) li: u32) {
         }
         p = at;
       }
-      p = upAt(p) * (groundR(p) - 0.15);
+      p = atLevel(keyOf(p), groundR(p) - 0.15);
     } else if (mode == 1u) {
       // drop from high above onto whatever is below, then sink just inside it
       let down = -upAt(p);
-      p = -down * LIFE_OUT;
+      p = dropStart(p, down);
       for (var k = 0; k < 96; k++) {
         let d = world(p).x;
         if (d < 0.02) { break; }
@@ -1692,7 +1679,7 @@ fn growFruits(@builtin(global_invocation_id) gid: vec3u) {
   // sag
   let n0 = f.norm.xyz;
   let d0 = normalize(mix(n0, up, PG(org, G_UPRIGHT)) + up * 1e-4);
-  var want = d0 + noonSun(f.base.xyz, stepNo) * (1.0 - nightness(f.base.xyz, stepNo)) * PG(org, G_PHOTO) * 0.6;
+  var want = d0 + toWorld(noonSun(geo(f.base.xyz), stepNo)) * (1.0 - nightness(geo(f.base.xyz), stepNo)) * PG(org, G_PHOTO) * 0.6;
   want += (tb[0] * sin(seedf + age * 0.004) + tb[1] * cos(seedf * 1.7 + age * 0.0031)) * PG(org, G_WOBBLE) * 0.7;
   want += vec3f(pushFp) / 65536.0 * 1.5;
   if (prevR > 0.0) {
@@ -1776,7 +1763,7 @@ fn growFruits(@builtin(global_invocation_id) gid: vec3u) {
   var shut = f.pa.w;
   var reshut = 0.0;
   if (PG(org, G_NIGHT_OPEN) > 0.0 && m > 0.6 && dcy <= 0.0) {
-    let want = PG(org, G_NIGHT_OPEN) * (1.0 - nightness(f.base.xyz, stepNo));
+    let want = PG(org, G_NIGHT_OPEN) * (1.0 - nightness(geo(f.base.xyz), stepNo));
     let ns = shut + clamp(want - shut, -steps * 0.004, steps * 0.004);
     reshut = (ns - shut) * 0.75 * PG(org, G_OPEN);
     shut = ns;
@@ -1886,7 +1873,7 @@ fn growFruits(@builtin(global_invocation_id) gid: vec3u) {
   }
   if (out > 0.0 && m > 0.8 && steps > 0.0) {
     var amt = out * R * R * steps * 0.012 * hymenium(org) * (1.0 - smoothstep(0.0, 0.3, dcy))
-            * mix(1.0, 2.0 * nightness(f.base.xyz, stepNo), PG(org, G_NIGHT_SPORE));
+            * mix(1.0, 2.0 * nightness(geo(f.base.xyz), stepNo), PG(org, G_NIGHT_SPORE));
     var at = O - Y * (th + f.feat2.z * 0.7 + teeth);
     if (A < 0.0) { at = O + Y * (ht + 0.05); }
     if (mode == 2u) {
@@ -2190,7 +2177,7 @@ fn tissueTau(start: vec3f, d: vec3f) -> f32 {
   var tau = 0.0;
   for (var i = 0; i < 90; i++) {
     let c = f4Coord(q);
-    if (!inF4(c) || dot(q, q) > LIFE_OUT * LIFE_OUT) { break; }
+    if (!inF4(c) || pastLife(q)) { break; }
     let v = f4Index(c);
     tau += f32(atomicLoad(&grid[gi(GF_DENS, v)]) + atomicLoad(&grid[gi(GF_OCC, v)])) * 0.03;
     q += d * F4 * 0.7;
@@ -2204,7 +2191,7 @@ fn shadeTissue(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid >= F4_RES)) { return; }
   let p = BOX_MIN + (vec3f(gid) + 0.5) * F4;
   let i = f4Index(vec3i(gid));
-  let L = sunDir(stepNo);
+  let L = sunWorld(stepNo);
   var ts = 0.0;
   var tk = 0.0;
   if ((atomicLoad(&grid[gi(GF_WORLD, i)]) & W_DEEP) == 0u && inLife(p)) {

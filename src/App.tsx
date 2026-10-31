@@ -10,7 +10,7 @@ import { SLIME_ORG, fillPrograms, fromPreset, ids, newId, prefersWood, swatch, t
 import { History, type GardenKeeping } from './history'
 import { Timeline } from './Timeline'
 import { beside, branchSpot, makeWorld, plantingSpots } from './world'
-import { PLANET_R } from './gpu/dims'
+import { FLAT, KIND, KINDS, PLANET_R, type WorldKind } from './gpu/dims'
 
 // new layouts on each visit; the garden's life (where colonies land,
 // arrivals, breeding) from a generator seeded by its layout's seed, so a
@@ -28,8 +28,10 @@ const timeOfDay = (d: V3, step: number) => {
   const t = (dayPhase(step) - Math.atan2(d[2], d[0]) / (2 * Math.PI) + 2) % 1
   return t < 0.42 ? 'morning' : t < 0.62 ? 'midday' : 'evening'
 }
-// Where on the planet the view is: under its middle, or over what it looks at.
+// Where on the planet the view is: under its middle, or over what it looks
+// at (a terrarium: where it stands).
 const lookAt = (cam: IsoCamera): V3 => {
+  if (WORLD.site) return WORLD.site.up
   const t = cam.target
   const l = Math.hypot(...t)
   if (l > 1) return [t[0] / l, t[1] / l, t[2] / l]
@@ -39,10 +41,18 @@ const lookAt = (cam: IsoCamera): V3 => {
 // Tools: look around (and pick fungi), or paint the ground
 const TOOLS = ['look', 'water', 'dry', 'feed', 'deplete', 'slime'] as const
 type Tool = (typeof TOOLS)[number]
-// The terrarium: a new layout every visit (or fungoid.terrarium(seed) in dev).
+// The world: a new layout every visit (or fungoid.terrarium(seed) in dev), of
+// the kind chosen (a planet or a terrarium: dims.ts KIND).
 let WORLD = makeWorld(Math.floor(visit() * 1e6))
 let SPOTS = plantingSpots(WORLD, WORLD.seed)
 seedLife(WORLD.seed)
+// The other kind of world: the page starts again with it (its grids differ).
+function switchKind(k: WorldKind) {
+  if (k === KIND) return
+  const url = new URL(location.href)
+  url.searchParams.set('world', k)
+  location.assign(url)
+}
 function layWorld(seed: number) {
   WORLD = makeWorld(seed)
   SPOTS = plantingSpots(WORLD, seed)
@@ -193,7 +203,7 @@ export function App() {
     let statTick = 0
     Renderer.create(canvas)
       .then(async (r) => {
-        await r.bakeWorld(WORLD.buffer)
+        await r.bakeWorld(WORLD.buffer, WORLD.site)
         if (!alive) return
         rendererRef.current = r
         // first garden
@@ -256,7 +266,7 @@ export function App() {
           look.current = lookAt(cam)
           // (close in, the eye adjusts to the light there; the whole planet
           // in view, to its day side)
-          const close = Math.min(1, Math.max(0, (32 - cam.height) / 20))
+          const close = FLAT ? 1 : Math.min(1, Math.max(0, (32 - cam.height) / 20))
           r.render({
             basis: cam.basis(),
             target: cam.target,
@@ -343,7 +353,8 @@ export function App() {
           if (eco.slime.mode === 0 && (step % (YEAR / 2)) / (YEAR / 2) > 0.1 && half !== lastSlime) {
             lastSlime = half
             if (rng() < 0.35) {
-              const wet = SPOTS.filter((p) => seasonAt(p, step) > 0.05 && seasonAt(p, step) < 0.35)
+              const season = (p: V3) => seasonAt(WORLD.site?.up ?? p, step)
+              const wet = SPOTS.filter((p) => season(p) > 0.05 && season(p) < 0.35)
               if (wet.length) r.addSlime(wet[Math.floor(rng() * wet.length)], 3000, false)
             }
           }
@@ -529,6 +540,11 @@ export function App() {
   const focus = useCallback((o: Organism | undefined) => {
     if (!o) return
     const cam = camRef.current
+    if (FLAT) {
+      cam.target = [o.x, 2, o.z]
+      cam.height = 12
+      return
+    }
     // (just over it, looking down on it at a slant)
     const r = Math.hypot(o.x, o.y, o.z) || 1
     const up: V3 = [o.x / r, o.y / r, o.z / r]
@@ -579,16 +595,19 @@ export function App() {
     },
     // a new layout, replanted with the same organisms (fresh: with the
     // garden's first kinds, as on a first visit)
-    terrarium: (seed = Math.floor(visit() * 1e6), fresh = false) => {
+    newWorld: (seed = Math.floor(visit() * 1e6), fresh = false) => {
       const r = rendererRef.current
       if (!r) return
       layWorld(seed)
       // queued ahead of the regrown garden's first step
-      void r.bakeWorld(WORLD.buffer)
+      void r.bakeWorld(WORLD.buffer, WORLD.site)
       actions.regrow(fresh ? initialSeeds() : undefined)
     },
   }
-  DEV.terrarium = actions.terrarium
+  DEV.newWorld = actions.newWorld
+  // (the old name: fungoid.garden and the film scripts use it)
+  DEV.terrarium = actions.newWorld
+  DEV.kind = KIND
   DEV.regrow = actions.regrow
   DEV.world = () => WORLD
   DEV.spots = () => SPOTS
@@ -676,6 +695,7 @@ export function App() {
               {stats.fps.toFixed(0)} fps · GPU {stats.r.gpuTotal.toFixed(1)} ms
               <br />
               {(stats.r.cells / 1000).toFixed(0)}k cells · year {Math.floor(stats.r.step / YEAR) + 1}, {SEASONS[Math.floor(seasonAt(look.current, stats.r.step) * 4) % 4]}, {timeOfDay(look.current, stats.r.step)}
+              {WORLD.site && ` · ${Math.round(Math.abs(WORLD.site.lat) * (180 / Math.PI))}° ${WORLD.site.lat >= 0 ? 'N' : 'S'}`}
             </div>
           )}
         </header>
@@ -783,7 +803,14 @@ export function App() {
           ))}
         </select>
         <button onClick={() => actions.regrow()}>Regrow</button>
-        <button onClick={() => actions.terrarium()}>New terrarium</button>
+        <div className="kinds" role="group">
+          {KINDS.map((k) => (
+            <button key={k} aria-pressed={k === KIND} onClick={() => switchKind(k)}>
+              {k[0].toUpperCase() + k.slice(1)}
+            </button>
+          ))}
+        </div>
+        <button onClick={() => actions.newWorld()}>New {KIND}</button>
       </footer>
 
       <Timeline history={garden?.history ?? null} renderer={garden?.renderer ?? null} frame={timelineFrame} look={look} onSeek={(s, quick) => void historyRef.current?.seek(s, quick)} />

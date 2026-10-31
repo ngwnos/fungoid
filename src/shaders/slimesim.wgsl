@@ -14,7 +14,7 @@
 // what the other passes share with them is in the grid buffer.
 
 // where each is (its direction, slime.wgsl slimeEncode), its heading (in the
-// ground's frame there: basisOf), its age + 1 (0: none)
+// ground's frame there: keyFrame), its age + 1 (0: none)
 @group(0) @binding(17) var<storage, read_write> slimeAgents: array<vec4f>;
 // the trail and where the plasmodium is (two copies each, by update
 // parity), the slime it leaves behind, and per column what draws and what
@@ -29,9 +29,9 @@ const SL_STEP: f32 = 0.06;         // cm an agent moves per update
 const SL_SENSE: f32 = 0.9;         // cm ahead it senses
 const SL_ANGLE: f32 = 0.6;         // radians to either side it senses
 const SL_TURN: f32 = 0.45;         // radians it turns
-const SL_FIX: f32 = 4096.0;        // the fixed point its agents' directions are summed in
 const COLS: u32 = SLIME_COLS;
-const COL_CM: f32 = 0.46;          // a column's width (about: 4 pi PLANET_R^2 / COLS)
+// (SL_FIX, the fixed point its agents' keys are summed in; COL_CM, a
+// column's width; SLIME_R0, cm per unit of key near the ground: the shape's)
 
 // In the grid buffer (GRID_SLIME), at the end: a header, then per column,
 // then per cell
@@ -68,7 +68,7 @@ fn slimeColOf(e: vec2f) -> u32 {
   let c = clamp(vec2i(floor((e * 0.5 + 0.5) * f32(SLIME_COL_RES))), vec2i(0), vec2i(i32(SLIME_COL_RES) - 1));
   return u32(c.y) * SLIME_COL_RES + u32(c.x);
 }
-fn slimeCol(p: vec3f) -> u32 { return slimeColOf(slimeEncode(upAt(p))); }
+fn slimeCol(p: vec3f) -> u32 { return slimeColOf(slimeEncode(keyOf(p))); }
 // the direction of column c's middle
 fn slimeColDir(c: u32) -> vec3f {
   return slimeDecode((vec2f(f32(c % SLIME_COL_RES), f32(c / SLIME_COL_RES)) + 0.5) / f32(SLIME_COL_RES) * 2.0 - 1.0);
@@ -79,7 +79,7 @@ fn slimeFood() -> f32 { return f32(bitcast<i32>(atomicLoad(&grid[sl(SL_FOOD)])))
 fn slimeFeed(food: f32) { atomicAdd(&grid[sl(SL_FOOD)], bitcast<u32>(i32(food * POOL_FP))); }
 fn slimeMode() -> u32 { return atomicLoad(&grid[sl(SL_MODE)]); }
 // the voxel of soil just under the ground in direction n
-fn slimeSoil(n: vec3f) -> u32 { return f4Index(f4Coord(n * (groundR(n) - 0.12))); }
+fn slimeSoil(n: vec3f) -> u32 { return f4Index(f4Coord(atLevel(n, groundR(n) - 0.12))); }
 
 // a direction kept in the header (f32 bits)
 fn slimeDirAt(k: u32) -> vec3f {
@@ -90,14 +90,14 @@ fn slimeDirTo(k: u32, n: vec3f) {
 }
 fn slimeMid() -> vec3f { return slimeDirAt(SL_MID); }
 
-// A heading at n (an angle in basisOf(n)) as a direction along the ground,
-// and a direction along the ground at n as a heading there.
+// A heading at n (an angle in keyFrame(n)) as a direction along the
+// ground, and a direction along the ground at n as a heading there.
 fn slimeHeading(n: vec3f, h: f32) -> vec3f {
-  let b = basisOf(n);
+  let b = keyFrame(n);
   return b[0] * cos(h) + b[1] * sin(h);
 }
 fn slimeAngle(n: vec3f, t: vec3f) -> f32 {
-  let b = basisOf(n);
+  let b = keyFrame(n);
   return atan2(dot(t, b[1]), dot(t, b[0]));
 }
 
@@ -128,14 +128,14 @@ fn slimeHatch() {
   let ps = SL_SUM + ((k + 1u) & 1u) * 3u;
   var sum = vec3f(0.0);
   for (var j = 0u; j < 3u; j++) { sum[j] = f32(bitcast<i32>(atomicExchange(&grid[sl(ps + j)], 0u))); }
-  if (n > 0u && dot(sum, sum) > 0.0) { slimeDirTo(SL_MID, normalize(sum)); }
+  if (n > 0u && dot(sum, sum) > 0.0) { slimeDirTo(SL_MID, slimeMiddle(sum, n)); }
   atomicStore(&grid[sl(SL_REACH)], u32((1.0 + 0.045 * sqrt(f32(n))) * 1000.0));
   // how wet the ground is under its middle
   let wet = wetAt(slimeSoil(slimeMid()));
   // set down by the player
   if (sim.slimeAt.z > 0.0 && u32(sim.slimeAt.w) != atomicLoad(&grid[sl(SL_REQ)])) {
     atomicStore(&grid[sl(SL_REQ)], u32(sim.slimeAt.w));
-    hatchAt(octDecode(sim.slimeAt.xy), i32(sim.slimeAt.z));
+    hatchAt(slimeAtKey(sim.slimeAt.xy), i32(sim.slimeAt.z));
     return;
   }
   if (mode == 1u) {
@@ -170,7 +170,7 @@ fn slimeHatch() {
 
 // What an agent at n senses `d` cm on along t: the trail.
 fn slimeSense(n: vec3f, t: vec3f, d: f32, rd: u32) -> f32 {
-  return slimeMap[rd * SLIME_N + slimeCellOf(slimeEncode(normalize(n + t * d)))];
+  return slimeMap[rd * SLIME_N + slimeCellOf(slimeEncode(slimeAhead(n, t, d)))];
 }
 
 @compute @workgroup_size(64)
@@ -187,8 +187,8 @@ fn slimeMove(@builtin(global_invocation_id) gid: vec3u) {
   let rd = slimeUpdate() & 1u;
   rinit(i, stepNo ^ 0x5113u);
   let n = slimeDecode(a.xy);
-  // (radians round the planet per cm, at the ground here)
-  let k = 1.0 / groundR(n);
+  // (units of key per cm, at the ground here)
+  let k = 1.0 / slimeRadius(n);
   var h = a.z;
   let ahead = slimeSense(n, slimeHeading(n, h), SL_SENSE * k, rd);
   let left = slimeSense(n, slimeHeading(n, h - SL_ANGLE), SL_SENSE * k, rd);
@@ -203,17 +203,23 @@ fn slimeMove(@builtin(global_invocation_id) gid: vec3u) {
   // (one body: an agent straying beyond its reach turns back toward its
   // middle)
   let mid = slimeMid();
-  let away = acos(clamp(dot(n, mid), -1.0, 1.0)) / k;
+  let away = slimeApart(n, mid) / k;
   let reach = f32(atomicLoad(&grid[sl(SL_REACH)])) / 1000.0;
   if (away > reach) {
-    let back = slimeAngle(n, mid);
+    let back = slimeAngle(n, slimeToward(n, mid));
     h += atan2(sin(back - h), cos(back - h)) * clamp(2.0 * (away / reach - 1.0), 0.0, 1.0);
   }
   // fruiting, it slows and gathers
   let speed = select(SL_STEP, SL_STEP * 0.2, slimeMode() == 2u);
   // on along the ground, its heading carried with it
-  let t = slimeHeading(n, h);
-  let m = normalize(n + t * speed * k);
+  var t = slimeHeading(n, h);
+  var m = slimeAhead(n, t * speed, k);
+  // (turning back from walls, where there are any)
+  if (FLAT && !slimeInside(m)) {
+    h += PI + (rr() - 0.5);
+    t = slimeHeading(n, h);
+    m = n;
+  }
   let e = slimeEncode(m);
   slimeAgents[i] = vec4f(e, slimeAngle(m, t), a.w + 1.0);
   atomicAdd(&grid[sl(SL_DEP + slimeCellOf(e))], 1u);
@@ -221,18 +227,6 @@ fn slimeMove(@builtin(global_invocation_id) gid: vec3u) {
   atomicAdd(&grid[sl(SL_COUNT + rd)], 1u);
   let q = vec3i(round(m * SL_FIX));
   for (var j = 0u; j < 3u; j++) { atomicAdd(&grid[sl(SL_SUM + rd * 3u + j)], bitcast<u32>(q[j])); }
-}
-
-// A cell next to this one (dx, dz at most 1 apart), over the fold at the
-// grid's edges: the halves of each edge meet each other, mirrored.
-fn slimeNext(c: vec2i) -> vec2i {
-  let r = i32(SLIME_RES.x);
-  var q = c;
-  if (q.x < 0) { q = vec2i(-q.x - 1, r - 1 - q.y); }
-  else if (q.x >= r) { q = vec2i(2 * r - 1 - q.x, r - 1 - q.y); }
-  if (q.y < 0) { q = vec2i(r - 1 - q.x, -q.y - 1); }
-  else if (q.y >= r) { q = vec2i(r - 1 - q.x, 2 * r - 1 - q.y); }
-  return q;
 }
 
 // The trail spreads and fades, food adds to it where it lies, light and dry
@@ -297,8 +291,8 @@ fn slimeColumns(@builtin(global_invocation_id) gid: vec3u) {
   if (b > 0u) { atomicStore(&grid[sl(SL_BANK + c)], b - max(b / 20000u, 1u)); }
   let dir = slimeColDir(c);
   let top = groundR(dir);
-  let v = f4Index(f4Coord(dir * (top - 0.12)));
-  let va = f4Index(f4Coord(dir * (top + 0.25)));
+  let v = f4Index(f4Coord(atLevel(dir, top - 0.12)));
+  let va = f4Index(f4Coord(atLevel(dir, top + 0.25)));
   let f = fieldA[v];
   let nut = max(f.y - f32(atomicLoad(&grid[gi(GF_EATEN, v)])) / 65536.0, 0.0);
   let spores = fieldA[F4N + va].y;
@@ -319,8 +313,8 @@ fn slimeColumns(@builtin(global_invocation_id) gid: vec3u) {
   if (mode == 2u && n >= 4u && age > 60u && age < 1200u) {
     rinit(c, stepNo ^ 0x5b0u);
     if (rr() < 0.002 * min(f32(n) / 8.0, 1.0)) {
-      let tb = basisOf(dir);
-      let q = dir * (top + 0.2) + (tb[0] * (rr() - 0.5) + tb[1] * (rr() - 0.5)) * COL_CM;
+      let tb = keyFrame(dir);
+      let q = atLevel(dir, top + 0.2) + (tb[0] * (rr() - 0.5) + tb[1] * (rr() - 0.5)) * COL_CM;
       let s = toSurface(q);
       spawnFruit(SLIME_ORG, s, worldN(s), rr() * 40.0, 0u, 0);
     }
@@ -362,7 +356,7 @@ fn slimePop(@builtin(global_invocation_id) gid: vec3u) {
     let at = slimeDirAt(SL_AT);
     let r = sqrt(rr()) * 0.8;
     let t = rr() * TAU;
-    let m = normalize(at + slimeHeading(at, t) * (r / groundR(at)));
+    let m = slimeClampIn(slimeAhead(at, slimeHeading(at, t), r / slimeRadius(at)));
     slimeAgents[i] = vec4f(slimeEncode(m), rr() * TAU, 0.5);
     return;
   }
@@ -374,8 +368,8 @@ fn slimePop(@builtin(global_invocation_id) gid: vec3u) {
       let b = slimeAgents[hash3(i, stepNo, k) % SLIME_MAX];
       if (b.w >= 1.0 || b.w < 0.0) {
         let pn = slimeDecode(b.xy);
-        let pb = basisOf(pn);
-        let m = normalize(pn + (pb[0] * (rr() - 0.5) + pb[1] * (rr() - 0.5)) * (0.05 / PLANET_R));
+        let pb = keyFrame(pn);
+        let m = slimeClampIn(slimeAhead(pn, pb[0] * (rr() - 0.5) + pb[1] * (rr() - 0.5), 0.05 / SLIME_R0));
         let h = slimeAngle(m, slimeHeading(pn, b.z + (rr() - 0.5) * 2.0));
         slimeAgents[i] = vec4f(slimeEncode(m), h, 0.5);
         break;

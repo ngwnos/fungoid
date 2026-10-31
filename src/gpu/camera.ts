@@ -1,3 +1,4 @@
+import { FLAT } from './dims'
 export type V3 = [number, number, number]
 
 export const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -26,32 +27,40 @@ export function basisFromDir(fwd: V3, up: V3 = [0, 1, 0]): Basis {
   return { fwd, right, up: cross(right, fwd) }
 }
 
-// Orthographic orbit camera, about the planet's axis (world y). `height` is
-// the visible world height in cm. Close in over the ground, up on screen is
-// up there rather than along the axis.
+// Orthographic orbit camera, about world y (the planet's axis; the
+// terrarium's up). `height` is the visible world height in cm. Close in
+// over the planet's ground, up on screen is up there rather than along the
+// axis; over the terrarium, it stays above the table.
 export class IsoCamera {
-  target: V3 = [0, 0, 0]
+  target: V3 = FLAT ? [0, 3, 0] : [0, 0, 0]
   yaw = Math.PI * 0.25
   pitch = 0.52
-  height = 40
+  height = FLAT ? 84 : 40
 
   basis(): Basis {
     const cp = Math.cos(this.pitch)
     const back: V3 = [cp * Math.sin(this.yaw), Math.sin(this.pitch), cp * Math.cos(this.yaw)]
     const r = Math.hypot(...this.target)
-    const k = r > 5 ? Math.min(1, Math.max(0, (26 - this.height) / 16)) : 0
+    const k = !FLAT && r > 5 ? Math.min(1, Math.max(0, (26 - this.height) / 16)) : 0
     const up = normalize(add(scale([0, 1, 0], 1 - k), scale(this.target, k / Math.max(r, 1e-3))))
     return basisFromDir(scale(back, -1), up)
   }
 
   orbit(dx: number, dy: number) {
     this.yaw -= dx * 0.006
-    this.pitch = Math.min(1.5, Math.max(-1.5, this.pitch + dy * 0.005))
+    this.pitch = Math.min(FLAT ? 1.45 : 1.5, Math.max(FLAT ? 0.12 : -1.5, this.pitch + dy * 0.005))
   }
 
   pan(dxPx: number, dyPx: number, viewportH: number) {
     const b = this.basis()
     const k = this.height / viewportH
+    if (FLAT) {
+      // (along the table)
+      const r: V3 = normalize([b.right[0], 0, b.right[2]])
+      const f: V3 = normalize([b.fwd[0], 0, b.fwd[2]])
+      this.target = add(this.target, add(scale(r, -dxPx * k), scale(f, (dyPx * k) / Math.sin(this.pitch))))
+      return
+    }
     // (across the view)
     this.target = add(this.target, add(scale(b.right, -dxPx * k), scale(b.up, dyPx * k)))
   }

@@ -33,6 +33,35 @@ export function sunDir(step: number): V3 {
   const a = 2 * Math.PI * (dayPhase(step) - 0.5)
   return [cd * Math.cos(a), sd, cd * Math.sin(a)]
 }
+// A terrarium's site: latitude `lat` (radians; longitude 0), as its frame in
+// the planet's: up there, and the box's x and z axes, turned so the sun at
+// its noon stands behind the box and to the left as seen from the front (+x
+// +z: as a lamp once stood), north or south of the equator. shape_box.wgsl
+// turns the planet's sun into the box with these.
+const NOON = [Math.cos(2.83), Math.sin(2.83)]
+export interface Site {
+  lat: number
+  up: V3
+  x: V3
+  z: V3
+}
+export function siteFrame(lat: number): Site {
+  const U: V3 = [Math.cos(lat), Math.sin(lat), 0]
+  const N: V3 = [-Math.sin(lat), Math.cos(lat), 0]
+  // (toward the equator, and along the sun's way across the sky)
+  const Q = N.map((v) => (lat >= 0 ? -v : v)) as V3
+  const K: V3 = [U[1] * Q[2] - U[2] * Q[1], U[2] * Q[0] - U[0] * Q[2], U[0] * Q[1] - U[1] * Q[0]]
+  // (Q to the noon direction; K, the way the sun goes on, a quarter turn
+  // from it)
+  const [wx, wz] = NOON
+  return { lat, up: U, x: [0, 1, 2].map((k) => wx * Q[k] + wz * K[k]) as V3, z: [0, 1, 2].map((k) => wz * Q[k] - wx * K[k]) as V3 }
+}
+const dot3 = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+// a direction in the planet's frame, in the terrarium's
+export const toWorld = (f: Site, v: V3): V3 => [dot3(f.x, v), dot3(f.up, v), dot3(f.z, v)]
+// towards the sun, in the world's frame (the terrarium's, if at a site)
+export const sunWorld = (step: number, site: Site | null): V3 => (site ? toWorld(site, sunDir(step)) : sunDir(step))
+
 // how high the sun stands over direction `d` (the sine of its elevation)
 export function sunElev(d: V3, step: number) {
   const s = sunDir(step)

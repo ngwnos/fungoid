@@ -2,9 +2,9 @@ import { compile } from './shaders'
 import { add, halton, normalize, scale, sub, type Basis, type V3 } from './camera'
 import { PHENO_STRIDE, glows } from '../genome/phenotype'
 import { MAX_ROCKS, MAX_ROOTS, WORLD_BYTES, octEncode } from '../world'
-import { sunDir } from '../weather'
+import { sunWorld, type Site } from '../weather'
 import {
-  F4_RES, F4N, FIELD_EVERY, GLOW, GLOW_N, GRID, GRID_WORDS, GROUND_RES, LIGHT, N_SHELL, PLANET_R, SHELL, MAX_CELLS, MAX_EVENTS, MAX_FRUITS, MAX_ORGS,
+  F4_RES, F4N, FIELD_EVERY, FLAT, GLOW, GLOW_N, GRID, GRID_WORDS, GROUND_RES, LIGHT, N_SHELL, PLANET_R, SHELL, MAX_CELLS, MAX_EVENTS, MAX_FRUITS, MAX_ORGS,
   PAT_COLS, PAT_RES, PAT_SLOTS, SLIME_COLS, SLIME_EVERY, SLIME_FLOATS, SLIME_MAX, SLIME_RES, SLIME_WORDS, VOL,
 } from './dims'
 
@@ -17,7 +17,7 @@ const GRID_DEV = GRID.PATS
 const GRID_SLIME = GRID.SLIME
 const VIEW_BYTES = 96
 const SCENE_BYTES = 160
-const SIMU_BYTES = 32 + 128 * 16 + 48
+const SIMU_BYTES = 32 + 128 * 16 + 48 + 32
 // (all set down at once, whatever their number: a garden run again sets
 // them down at the same step)
 const MAX_INOC = 64
@@ -260,6 +260,7 @@ export class Renderer {
   // the sun's light baked for two places of the sun: the step each is for
   private sunVis!: GPUTexture[]
   private visAt = [NaN, NaN]
+  private site: Site | null = null
   private devTex!: GPUTexture
   private slimeTex!: GPUTexture
   private slimeRead!: GPUBuffer
@@ -350,10 +351,11 @@ export class Renderer {
     this.pickRead = d.createBuffer({ size: 272, usage: BUF.COPY_DST | BUF.MAP_READ })
 
     this.ground = d.createTexture({ label: 'ground', size: GROUND_RES, format: 'rgba16float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC })
-    this.vol = d.createTexture({ label: 'volume', size: VOL, dimension: '3d', format: 'rgba16float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING })
-    this.aux = d.createTexture({ label: 'aux', size: VOL, dimension: '3d', format: 'rgba8snorm', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING })
+    // (the baked volumes can be read back: dev checks)
+    this.vol = d.createTexture({ label: 'volume', size: VOL, dimension: '3d', format: 'rgba16float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC })
+    this.aux = d.createTexture({ label: 'aux', size: VOL, dimension: '3d', format: 'rgba8snorm', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC })
     const vol3 = (label: string, size: [number, number, number]) =>
-      d.createTexture({ label, size, dimension: '3d', format: 'rgba16float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING })
+      d.createTexture({ label, size, dimension: '3d', format: 'rgba16float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC })
     this.light = vol3('light', LIGHT)
     this.bounce = vol3('bounce', LIGHT)
     this.sunVis = [0, 1].map((k) =>
@@ -574,15 +576,18 @@ export class Renderer {
     const p = enc.beginComputePass({ label: 'sun light' })
     p.setPipeline(this.pipes.bakeSunVis)
     for (const [slot, step] of bake) {
-      this.device.queue.writeBuffer(this.b[`sunVisU${slot}`], 0, new Float32Array([...sunDir(step), 0, ...SUN_COLOR, 0]))
+      this.device.queue.writeBuffer(this.b[`sunVisU${slot}`], 0, new Float32Array([...sunWorld(step, this.site), 0, ...SUN_COLOR, 0]))
       p.setBindGroup(0, this.groups[`bakeSunVis${slot}`])
       p.dispatchWorkgroups(...groups(LIGHT, 4))
     }
     p.end()
   }
 
-  async bakeWorld(world: ArrayBuffer) {
+  // A new world: its layout (world.ts) baked into the ground map and the
+  // volumes; and where on a planet it stands, if it is a terrarium.
+  async bakeWorld(world: ArrayBuffer, site: Site | null = null) {
     const d = this.device
+    this.site = site
     d.queue.writeBuffer(this.b.world, 0, world)
     d.queue.writeBuffer(this.b.sunU, 0, new Float32Array([0, 1, 0, 0, ...SUN_COLOR, 0]))
     // (the sun's light is baked again for the new world)
@@ -928,7 +933,9 @@ export class Renderer {
   // A slime mould hatches over here as `agents` agents (shown at once while
   // paused, if set down by hand).
   addSlime(at: V3, agents = 3000, shown = true) {
-    this.slimeReq = [...octEncode(at), agents]
+    // (where, as slimeAtKey reads it: a direction unfolded, or over the floor)
+    const [u, v] = FLAT ? [at[0], at[2]] : octEncode(at)
+    this.slimeReq = [u, v, agents]
     this.slimeShow = shown
   }
 
@@ -955,6 +962,12 @@ export class Renderer {
     // runs one, or shows one while paused)
     const s0 = this.pendingReset ? 0 : this.simStep
     const slimeDue = steps > 0 ? Math.ceil(s0 / SLIME_EVERY) * SLIME_EVERY < s0 + steps : this.slimeShow
+    // (a terrarium's site on the planet, for its sun and weather)
+    if (this.site) {
+      uf.set([...this.site.up, 0], 4)
+      uf.set([...this.site.x, 0], 532)
+      uf.set([...this.site.z, 0], 536)
+    }
     if (this.slimeReq && !held && slimeDue) {
       uf.set([...this.slimeReq, ++this.slimeReqs], 528)
       this.slimeReq = null
@@ -1172,16 +1185,16 @@ export class Renderer {
     const vis = this.sunVisFor(shown, steps)
     // (the eye opens up as the light goes: by starlight, about six times)
     const vd = Math.min(1, Math.max(0, fi.viewDay))
-    sf.set([...sunDir(shown), fi.sunRadius], 0)
+    sf.set([...sunWorld(shown, this.site), fi.sunRadius], 0)
     sf.set([...SUN_COLOR, 0], 4)
     sf.set([...ZEN, 0], 8)
     sf.set([...HOR, 0], 12)
     sf.set([fi.exposure * Math.min(6, (vd + 0.012 * (1 - vd)) ** -0.4), performance.now() / 1000, fi.debug, fi.bounces], 16)
     sf.set([vis.blend, 0, 0, 1 - vd], 36)
     su.set([fi.selected + 1, fi.second + 1, this.frame, 0], 20)
-    // (in focus: the ground nearest the eye when looking at the planet whole,
-    // or what is looked at)
-    const focus = 600 - Math.max(0, PLANET_R - Math.hypot(...fi.target))
+    // (in focus: what is looked at; on the planet whole, the ground nearest
+    // the eye)
+    const focus = FLAT ? 600 : 600 - Math.max(0, PLANET_R - Math.hypot(...fi.target))
     sf.set([this.flushHistory ? 1 : fi.alphaFloor, lens ? lens.aperture : fi.aperture, lens ? lens.focus : focus, fi.fineMoss ? 1 : 0], 24)
     this.flushHistory = false
     // (no stroke while the garden is kept or held: it lands between steps)

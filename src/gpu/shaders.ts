@@ -22,23 +22,40 @@ import present from '../shaders/present.wgsl?raw'
 import downsample from '../shaders/downsample.wgsl?raw'
 import glow from '../shaders/glow.wgsl?raw'
 import graph from '../shaders/graph.wgsl?raw'
+import shapePlanet from '../shaders/shape_planet.wgsl?raw'
+import shapeBox from '../shaders/shape_box.wgsl?raw'
 import { phenoWgsl } from '../genome/phenotype'
-import { dimsWgsl } from './dims'
+import { FLAT, dimsWgsl } from './dims'
+
+// The world's shape comes in sections (shape_*.wgsl), each only in the
+// shaders that bind what it uses: pure (all), ground (the ground map), bake
+// (the ground bake), sim, shade.
+function sections(src: string) {
+  const out: Record<string, string> = { pure: '', ground: '', bake: '', sim: '', shade: '' }
+  let at = 'pure'
+  for (const line of src.split('\n')) {
+    const m = /^\/\/== (\w+)/.exec(line)
+    if (m) at = m[1]
+    else out[at] += line + '\n'
+  }
+  return out
+}
+const shape = sections(FLAT ? shapeBox : shapePlanet)
 
 // WGSL has no includes; modules are concatenated in dependency order.
-const pre = [dimsWgsl(), common, phenoWgsl(), world].join('\n')
+const pre = [dimsWgsl(), common, phenoWgsl(), world, shape.pure].join('\n')
 const join = (...parts: string[]) => [pre, ...parts].join('\n')
 
 export const SHADERS = {
-  bakeGround: join(bakeGround),
-  bakeVolume: join(worldbake, bakeVolume),
+  bakeGround: join(shape.bake, bakeGround),
+  bakeVolume: join(worldbake, shape.ground, bakeVolume),
   bakeAux: join(worldbake, bakeAux),
-  sim: join(cells, cellprog, fruit, slime, sim, slimeSim),
+  sim: join(cells, cellprog, fruit, slime, shape.ground, shape.sim, sim, slimeSim),
   args: join(cells, args),
   tissue: join(cells, cellprog, tissue),
   glow: join(cells, cellprog, fruit, glow),
   fruitRaster: join(fruit, fruitDev, fruitRaster),
-  shade: join(cells, cellprog, fruit, fruitDev, slime, shade),
+  shade: join(cells, cellprog, fruit, fruitDev, slime, shape.ground, shape.shade, shade),
   bakeSun: join(bakeSun),
   temporal: join(temporal),
   post: join(post),

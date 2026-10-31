@@ -1,8 +1,9 @@
-// ---- world.wgsl: the planet (pure functions and constants) ----
-// Units are centimetres. The planet's centre is the origin, its ground about
-// PLANET_R from it; the domain the garden lives in, BOX_MIN..BOX_MAX, is a
-// cube around it, and the static scenery in it is baked into a 3D
-// distance-field volume. Up is away from the centre.
+// ---- world.wgsl: the world (pure functions and constants) ----
+// Units are centimetres. The garden lives in the domain BOX_MIN..BOX_MAX,
+// and the static scenery in it is baked into a 3D distance-field volume.
+// Its shape (a small planet, or a terrarium: where up is, where the ground
+// is) is shape_*.wgsl's. The sun, the calendar and the weather are those of
+// a planet whatever the shape: a terrarium sits somewhere on one (geo).
 
 const ROOT_SEG: u32 = 20u;
 const MAX_ROCKS: u32 = 16u;
@@ -44,6 +45,7 @@ struct WorldDesc {
   terrain: Terrain,
   rocks: array<Rock, 16>,
   roots: array<Root, 12>,
+  lie: vec4f,     // a terrarium's ground: the way it rises (xz), from and to along it
 }
 
 // The calendar. A day is SOL steps from one midnight to the next at
@@ -73,14 +75,16 @@ fn noonSun(p: vec3f, step: u32) -> vec3f {
   let h = normalize(vec3f(p.x, 0.0, p.z) + vec3f(1e-5, 0.0, 0.0));
   return vec3f(h.x * cd, sd, h.z * cd);
 }
+// up at a point of the planet (its frame: these take points geo gives)
+fn geoUp(p: vec3f) -> vec3f { return p / max(length(p), 1e-4); }
 // how high the sun stands at p (the sine of its elevation)
-fn sunElev(p: vec3f, step: u32) -> f32 { return dot(upAt(p), sunDir(step)); }
+fn sunElev(p: vec3f, step: u32) -> f32 { return dot(geoUp(p), sunDir(step)); }
 // 1 in the dark of night .. 0 by day (as the renderer lights it); and the
 // hour after sunset (the sun gone down in the west)
 fn nightness(p: vec3f, step: u32) -> f32 { return 1.0 - smoothstep(-0.12, 0.22, sunElev(p, step)); }
 fn dusk(p: vec3f, step: u32) -> f32 {
   let s = sunDir(step);
-  let up = upAt(p);
+  let up = geoUp(p);
   let el = dot(up, s);
   let west = dot(s, cross(up, vec3f(0.0, 1.0, 0.0))) > 0.0;
   return select(0.0, smoothstep(0.04, 0.0, el) * smoothstep(-0.4, -0.33, el), west);
@@ -91,7 +95,7 @@ fn dusk(p: vec3f, step: u32) -> f32 {
 // the nearer the poles: autumn and winter are soaking, summer drier (the
 // planet never quite dries out), damp all year near the equator.
 fn seasonPhase(p: vec3f, step: u32) -> f32 { return fract(yearPhase(step) + select(0.0, 0.5, p.y < 0.0)); }
-fn seasonal(p: vec3f) -> f32 { return smoothstep(0.05, 0.6, abs(upAt(p).y)); }
+fn seasonal(p: vec3f) -> f32 { return smoothstep(0.05, 0.6, abs(geoUp(p).y)); }
 // 0.57 in high summer .. 1 in winter (0.82 near the equator)
 fn seasonWet(p: vec3f, step: u32) -> f32 {
   return 0.82 + 0.25 * seasonal(p) * cos(TAU * (seasonPhase(p, step) - 0.25));
@@ -104,7 +108,7 @@ fn seasonWet(p: vec3f, step: u32) -> f32 {
 const STORMS: u32 = 6u;
 const STORM_LIFE: u32 = 2400u;
 fn rainWet(p: vec3f, step: u32) -> f32 {
-  let up = upAt(p);
+  let up = geoUp(p);
   let lat = asin(clamp(up.y, -1.0, 1.0));
   let lon = atan2(up.z, up.x);
   var r = 0.0;
@@ -155,9 +159,6 @@ fn boxSize() -> vec3f { return BOX_MAX - BOX_MIN; }
 fn boxCenter() -> vec3f { return (BOX_MAX + BOX_MIN) * 0.5; }
 fn volUVW(p: vec3f) -> vec3f { return (p - BOX_MIN) / boxSize(); }
 
-// up, here
-fn upAt(p: vec3f) -> vec3f { return p / max(length(p), 1e-4); }
-
 // A direction as a point of the square [-1, 1]^2 and back: the sphere
 // unfolded flat (octahedrally, about the axis), for maps over the planet.
 fn octEncode(n: vec3f) -> vec2f {
@@ -172,9 +173,6 @@ fn octDecode(e: vec2f) -> vec3f {
   n.z += select(t, -t, n.z >= 0.0);
   return normalize(n);
 }
-// where in the ground map (bake_ground.wgsl) a direction is
-fn groundUV(dir: vec3f) -> vec2f { return octEncode(dir) * 0.5 + 0.5; }
-
 // Where a ray enters and leaves a sphere about the centre (enter > leave:
 // it misses).
 fn sphereHit(ro: vec3f, rd: vec3f, r: f32) -> vec2f {

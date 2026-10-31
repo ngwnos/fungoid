@@ -12,13 +12,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid >= VOL_RES)) { return; }
   let p = BOX_MIN + (vec3f(gid) + 0.5) / vec3f(VOL_RES) * boxSize();
 
-  // (the planet's heart is all soil)
-  let r = length(p);
-  var dSoil = -8.0;
-  if (r > 1.0) {
-    let g = textureSampleLevel(ground, linSamp, groundUV(p / r), 0.0);
-    dSoil = (r - PLANET_R - g.x) * g.y;
-  }
+  let dSoil = soilDist(p);
 
   var dWood = 1e9;
   var woodType = 0.0;

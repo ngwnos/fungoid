@@ -248,11 +248,32 @@ input[type='range'] {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  width: min(520px, calc(100% - 24px));
+  width: min(640px, calc(100% - 24px));
   background: var(--panel);
   backdrop-filter: blur(14px);
   border: 1px solid var(--line);
   border-radius: 10px;
+}
+
+/* which world: two buttons joined */
+.kinds {
+  display: flex;
+}
+.kinds button {
+  flex: 1;
+}
+.kinds button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.kinds button:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+}
+.kinds button[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.35);
 }
 
 .tools {

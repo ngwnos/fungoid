@@ -40,10 +40,7 @@
 // below this fraction of its height a moss cushion is effectively solid
 const MOSS_CORE: f32 = 0.5;
 const SIG_MOSS: f32 = 30.0;
-// the planet's air: thin, thinning with height (HAZE per cm at the ground,
-// fading over HAZE_H), a little blue
-const HAZE: f32 = 0.012;
-const HAZE_H: f32 = 1.6;
+// (the air's haze: the shape's HAZE and hazeDensity)
 const SPORE_DUST: f32 = 0.6;   // scattering per unit of airborne spores, per cm
 // what glows: faint by day, bright in the dark (the eye opens up at night);
 // the light it casts, per unit of the glow light field
@@ -61,11 +58,11 @@ fn mossThick(a: vec4f) -> f32 { return select(0.0, a.w, a.w > 0.02); }
 // Upper bound of the density for a layer of this thickness.
 fn mossMajorant(thick: f32) -> f32 { return SIG_MOSS * clamp(thick * 2.2, 0.15, 1.0); }
 
-// where on the ground p is: its direction, at the ground's radius
-fn onGround(p: vec3f) -> vec3f { return upAt(p) * PLANET_R; }
+// where on the ground p is (patterns over the ground are of this)
+fn onGround(p: vec3f) -> vec3f { return groundCoord(p, upAt(p)); }
 // noise along the ground at `a` a cm, and slower, `b`, along up
 fn upNoise(p: vec3f, a: f32, b: f32, seed: u32) -> f32 {
-  let r = length(p) * b;
+  let r = levelOf(p) * b;
   return gnoise3(onGround(p) * a + vec3f(r, r * 1.31, r * 0.77), seed);
 }
 
@@ -286,9 +283,8 @@ fn groundLife(m: Mat, p: vec3f, wood: bool) -> Mat {
 // plasmodium, thick in its veins (it dulls as it turns to fruit), and the
 // glaze of slime it leaves where it has been.
 fn slimeAt(p: vec3f) -> vec4f { return textureSampleLevel(slimeTex, linSamp, slimeUV(p), 0.0); }
-// how far from the centre the ground is, in p's direction
-fn groundR(p: vec3f) -> f32 { return PLANET_R + textureSampleLevel(ground, linSamp, groundUV(upAt(p)), 0.0).x; }
-fn onTop(p: vec3f, below: f32) -> bool { return length(p) > groundR(p) - below; }
+// (groundR: the level of the ground under p, the shape's)
+fn onTop(p: vec3f, below: f32) -> bool { return levelOf(p) > groundR(p) - below; }
 fn slimeOver(m: Mat, p: vec3f) -> Mat {
   let s = slimeAt(p);
   if (s.x + s.y < 0.02 || !onTop(p, 0.6)) { return m; }
@@ -322,6 +318,7 @@ fn visibility(p: vec3f, n: vec3f) -> vec2f { return visibilityOff(p, n, 0.14); }
 
 fn visibilityOff(p: vec3f, n: vec3f, off: f32) -> vec2f {
   let q = p + n * off;
+  if (HAS_PANES && onGlass(q)) { return glassVis(n); }
   let l = lightAt(q);
   let t = tissueLightAt(q);
   return vec2f(l.x * t.x, l.y * t.y);
@@ -384,6 +381,16 @@ fn space(d: vec3f) -> vec3f {
   return c + scene.sunCol.rgb * (disk * 60.0 + 0.02 * pow(mu, 200.0) + 0.004 * pow(mu, 12.0));
 }
 
+// what lies beyond the air along a ray (the shape's backdrop): its colour,
+// and if it is a surface, for the G-buffer
+struct Backdrop {
+  col: vec3f,
+  hit: bool,
+  alb: vec3f,
+  n: vec3f,
+  t: f32,
+}
+
 struct Mat {
   alb: vec3f,
   rough: f32,
@@ -441,12 +448,12 @@ fn soilMat(p: vec3f, n: vec3f, fine: bool) -> Mat {
   var m: Mat;
   m.n = n;
   m.rough = 0.9;
-  let depth = groundR(p) - length(p);
+  let depth = groundR(p) - levelOf(p);
   let g = onGround(p);
   let seed = 101u;
   // the substrate where it shows (cut faces, deep down): gravel, charcoal,
   // soil, in layers by depth
-  if (depth > 1.2 || abs(dot(n, upAt(p))) < 0.5) {
+  if (depth > 1.2 || abs(dot(n, upAt(p))) < 0.5 || cutFace(p)) {
     if (depth > 4.1 + gnoise3(g * 0.8, 103u) * 0.2) {
       let c = cellular3(p / 0.55, 104u, 0.9);
       let tone = u01(c.id);
@@ -755,13 +762,28 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   for (var seg = 0; seg < 4; seg++) {
     let tmax = tissueT - travelled;
-    let bi = sphereHit(ro, rd, SKY_R);
+    let bi = airHit(ro, rd);
     if (bi.y < max(bi.x, 0.0)) {
-      col += T * space(out);
+      // (space; or the table, the sky and the room)
+      let b = backdrop(ro, rd, out, v);
+      col += T * b.col;
+      if (b.hit && !gSet) {
+        gAlb = b.alb;
+        gN = b.n;
+        gDepth = b.t + travelled;
+        gSet = true;
+      }
       break;
     }
+    // into the air through a pane of glass
+    if (HAS_PANES && !inAir(ro) && tmax > bi.x && crossPane(ro + rd * bi.x, rd, &col, &T)) {
+      let adv = bi.x + 0.02;
+      ro += rd * adv;
+      travelled += adv;
+      continue;
+    }
 
-    // march the planet's air
+    // march the air
     let t0 = max(bi.x, 0.0);
     let t1 = bi.y;
     var t = t0;
@@ -833,7 +855,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       var thick = 0.0;
       for (var k = 0; k < 4; k++) {
         let ps = ro + rd * (t0 + (f32(k) + jit) / 4.0 * segLen);
-        let dens = exp(-max(length(ps) - PLANET_R, 0.0) / HAZE_H);
+        let dens = hazeDensity(ps);
         hz += lightAt(ps).x * tissueLightAt(ps).x * dens * sunAt(ps);
         thick += dens;
       }
@@ -854,7 +876,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (kind == 0u) {
-      // out of the air again, into space
+      // out of the air again (through a pane, if there is one)
+      if (HAS_PANES) { crossPane(ro + rd * t1, rd, &col, &T); }
       let adv = t1 + 0.02;
       ro += rd * adv;
       travelled += adv;

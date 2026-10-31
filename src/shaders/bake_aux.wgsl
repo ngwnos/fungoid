@@ -49,11 +49,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let open = smoothstep(0.5, 2.5, above);
   let facing = smoothstep(0.15, 0.7, dot(n, up));
   // (low ground is damp)
-  let damp = smoothstep(1.5, -1.5, length(p) - PLANET_R);
-  let q = up * PLANET_R;
+  let damp = mossDamp(p);
+  let q = groundCoord(p, up);
   let patches = fbm3(q * 0.17, 31u, 4u) + 0.12 * fbm3(q * 1.0, 32u, 2u);
   let host = v.y * 0.4 + v.z * 0.5;
-  let moss = facing * open * smoothstep(0.02, 0.4, patches + damp * 0.25 + host);
+  var moss = facing * open * smoothstep(0.02, 0.4, patches + damp * 0.25 + host);
+  // (none on the walls, if there are any)
+  if (FLAT) { moss *= mossWall(p); }
   let cushion = 0.4 + 0.6 * smoothstep(-0.45, 0.45, fbm3(q * 1.1, 41u, 3u));
   let thick = clamp(moss, 0.0, 1.0) * cushion * 0.45;
   textureStore(auxOut, gid, vec4f(tan, thick));

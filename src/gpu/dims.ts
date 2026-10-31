@@ -20,30 +20,67 @@ export const PAT_COLS = 32
 export const FIELD_EVERY = 8
 export const SLIME_EVERY = 4
 
+// The world is a small planet or a terrarium (a glass box of ground on a
+// table), chosen once as the page loads (?world=, else as last chosen): their
+// grids differ in size, so the shaders are built for one of them.
+export type WorldKind = 'planet' | 'terrarium'
+export const KINDS: WorldKind[] = ['planet', 'terrarium']
+const isKind = (k: unknown): k is WorldKind => KINDS.includes(k as WorldKind)
+export const KIND: WorldKind = (() => {
+  if (typeof location === 'undefined') return 'planet'
+  const asked = new URLSearchParams(location.search).get('world')
+  try {
+    if (isKind(asked)) {
+      localStorage.setItem('fungoid.world', asked)
+      return asked
+    }
+    const kept = localStorage.getItem('fungoid.world')
+    if (isKind(kept)) return kept
+  } catch {
+    // (no storage here)
+  }
+  return isKind(asked) ? asked : 'planet'
+})()
+export const FLAT = KIND === 'terrarium'
+
 // The planet (cm): its centre is the origin and its ground about PLANET_R from
 // it. What lives on it stays between LIFE_IN and LIFE_OUT from the centre,
-// and what is drawn of it within SKY_R. The domain is a cube around it, and
-// the scenery's distance-field volume spans it; the ground map is the
-// ground's height over the sphere, unfolded (world.wgsl octEncode).
+// and what is drawn of it within SKY_R. (A terrarium sits somewhere on such
+// a planet: its sun and weather are reckoned with these too.)
 export const PLANET_R = 13.5
 export const LIFE_IN = 8.5
 export const LIFE_OUT = 19.6
 export const SKY_R = 20.6
-export const BOX_MIN: V3i = [-20.8, -20.8, -20.8]
-export const BOX_MAX: V3i = [20.8, 20.8, 20.8]
-export const VOL: V3i = [288, 288, 288]
-export const GROUND_RES: [number, number] = [1024, 1024]
+// The domain (a cube around the planet; the terrarium's glass box), the
+// scenery's distance-field volume over it, and the ground map: the ground's
+// height over the sphere unfolded (world.wgsl octEncode), or over the box's
+// floor.
+const SIZES = {
+  planet: {
+    min: [-20.8, -20.8, -20.8] as V3i, max: [20.8, 20.8, 20.8] as V3i, vol: [288, 288, 288] as V3i, ground: [1024, 1024] as [number, number],
+    f4: [104, 104, 104] as V3i, light: [144, 144, 144] as V3i, glow: [52, 52, 52] as V3i, slimeCols: 104,
+  },
+  terrarium: {
+    min: [-22, -6, -22] as V3i, max: [22, 16, 22] as V3i, vol: [352, 176, 352] as V3i, ground: [704, 704] as [number, number],
+    f4: [110, 55, 110] as V3i, light: [176, 88, 176] as V3i, glow: [55, 28, 55] as V3i, slimeCols: 110,
+  },
+}[KIND]
+export const BOX_MIN: V3i = SIZES.min
+export const BOX_MAX: V3i = SIZES.max
+export const VOL: V3i = SIZES.vol
+export const GROUND_RES: [number, number] = SIZES.ground
 // The fields, on a 4 mm grid; in 8-voxel blocks and 4-voxel sub-blocks.
 export const F4 = 0.4
-export const F4_RES: V3i = [104, 104, 104]
+export const F4_RES: V3i = SIZES.f4
 export const F4N = prod(F4_RES)
 export const BLOCKS = blocks(F4_RES, 8)
 export const N_BLOCKS = prod(BLOCKS)
 export const SUBS = blocks(F4_RES, 4)
 export const N_SUBS = prod(SUBS)
-// The blocks life can reach (they cross the shell between LIFE_IN and
-// LIFE_OUT, with a voxel or two to spare): the per-step block passes visit
-// only these. Each packed x | y << 8 | z << 16, four to a vec4 of a uniform.
+// The blocks life can reach (on the planet, they cross the shell between
+// LIFE_IN and LIFE_OUT, with a voxel or two to spare; in the terrarium, all
+// of them): the per-step block passes visit only these. Each packed
+// x | y << 8 | z << 16, four to a vec4 of a uniform.
 const shellBlocks = (() => {
   const out: number[] = []
   const side = 8 * F4
@@ -55,7 +92,7 @@ const shellBlocks = (() => {
         const a = [x, y, z].map((c, k) => BOX_MIN[k] + c * side)
         const near = Math.hypot(...a.map((v) => Math.max(v, Math.min(0, v + side))))
         const far = Math.hypot(...a.map((v) => Math.max(Math.abs(v), Math.abs(v + side))))
-        if (far > lo && near < hi) out.push(x | (y << 8) | (z << 16))
+        if (FLAT || (far > lo && near < hi)) out.push(x | (y << 8) | (z << 16))
       }
     }
   }
@@ -66,16 +103,16 @@ export const SHELL = new Uint32Array(Math.ceil(N_SHELL / 4) * 4)
 SHELL.set(shellBlocks)
 // the baked light, at half the volume's resolution; and the light what glows
 // casts, on an 8 mm grid
-export const LIGHT: V3i = [144, 144, 144]
+export const LIGHT: V3i = SIZES.light
 export const GLOW_CELL = 0.8
-export const GLOW: V3i = [52, 52, 52]
+export const GLOW: V3i = SIZES.glow
 export const GLOW_N = prod(GLOW)
-// The slime mould: its agents, its trail grid over the planet (slime.wgsl:
-// cells of about 1.2 mm, all the same area), its columns (four by four of
-// its cells, about 4.6 mm), the grid buffer's words and the map's floats it
-// has.
+// The slime mould: its agents, its trail grid over the ground (the shape's
+// slimeEncode: on the planet, cells of about 1.2 mm, all the same area; in
+// the terrarium, 1 mm), its columns (four by four of its cells), the grid
+// buffer's words and the map's floats it has.
 export const SLIME_MAX = 16384
-export const SLIME_COL_RES = 104
+export const SLIME_COL_RES = SIZES.slimeCols
 export const SLIME_RES: [number, number] = [4 * SLIME_COL_RES, 4 * SLIME_COL_RES]
 export const SLIME_N = prod(SLIME_RES)
 export const SLIME_COLS = SLIME_COL_RES * SLIME_COL_RES

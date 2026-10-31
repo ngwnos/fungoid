@@ -3,9 +3,13 @@ import { mulberry32, mutate } from './genome/breed'
 import { GENES } from './genome/genes'
 import { fromPreset, newId } from './scene'
 import { octEncode, type V3 as WV3 } from './world'
-import { PLANET_R } from './gpu/dims'
+import { BOX_MAX, BOX_MIN, FLAT, PLANET_R } from './gpu/dims'
 import { dot, normalize, sub, type V3 } from './gpu/camera'
 import { F4N, GRID, GRID_FIELDS, GRID_SIZE, GRID_WORDS, MAX_FRUITS } from './gpu/dims'
+import { YEAR } from './weather'
+
+// the whole world in view: the planet, or the terrarium on its table
+const WHOLE = FLAT ? { target: [0, 3, 0], height: 84 } : { target: [0, 0, 0], height: 40 }
 
 type Fungoid = Record<string, any>
 
@@ -317,7 +321,7 @@ export function installDevTools(fungoid: Fungoid) {
     fungoid.opts.accumulate = samples > 1
     fungoid.setSelected(null)
     fungoid.setSpeed(samples > 1 ? 0 : speed)
-    Object.assign(fungoid.cam, { target: [0, 0, 0], height: 40, pitch: 0.5, yaw: Math.PI / 4, ...(o.cam ?? {}) })
+    Object.assign(fungoid.cam, { ...WHOLE, pitch: 0.5, yaw: Math.PI / 4, ...(o.cam ?? {}) })
     const yaw0 = fungoid.cam.yaw
     await wait(200)
     fungoid.hold = true
@@ -368,7 +372,7 @@ export function installDevTools(fungoid: Fungoid) {
     fungoid.opts.accumulate = true
     fungoid.setSelected(null)
     fungoid.setSpeed(0)
-    Object.assign(fungoid.cam, { target: [0, 0, 0], height: 40, pitch: 0.5, yaw: Math.PI / 4, ...(o.cam ?? {}) })
+    Object.assign(fungoid.cam, { ...WHOLE, pitch: 0.5, yaw: Math.PI / 4, ...(o.cam ?? {}) })
     const yaw0 = fungoid.cam.yaw
     if (regrow) fungoid.regrow()
     await wait(200)
@@ -413,9 +417,10 @@ export function installDevTools(fungoid: Fungoid) {
     for (let k = 0; k < 3; k++) await fungoid.step()
   }
 
-  // How far from the planet's centre the ground is in the direction of `p`
-  // (cm), from the ground map as last read (fungoid.loadGround(), again after
-  // the world changes).
+  // The ground's level under `p` (cm: on the planet, how far from its centre
+  // the ground is in p's direction; in the terrarium, its height), from the
+  // ground map as last read (fungoid.loadGround(), again after the world
+  // changes).
   let ground: { heights: Float32Array; size: [number, number] } | null = null
   fungoid.loadGround = async () => {
     ground = await renderer().readGround()
@@ -424,14 +429,16 @@ export function installDevTools(fungoid: Fungoid) {
     if (!ground) throw new Error('fungoid.loadGround() first')
     const [W, H] = ground.size
     const l = Math.hypot(...p) || 1
-    const [ex, ey] = octEncode([p[0] / l, p[1] / l, p[2] / l])
+    const [ex, ey] = FLAT
+      ? [0, 2].map((k) => ((p[k] - BOX_MIN[k]) / (BOX_MAX[k] - BOX_MIN[k])) * 2 - 1)
+      : octEncode([p[0] / l, p[1] / l, p[2] / l])
     const u = Math.min(W - 1.001, Math.max(0, ((ex + 1) / 2) * W - 0.5))
     const v = Math.min(H - 1.001, Math.max(0, ((ey + 1) / 2) * H - 0.5))
     const i = Math.floor(u)
     const j = Math.floor(v)
     const h = (a: number, b: number) => ground!.heights[b * W + a]
     const [fu, fv] = [u - i, v - j]
-    return PLANET_R + (h(i, j) * (1 - fu) + h(i + 1, j) * fu) * (1 - fv) + (h(i, j + 1) * (1 - fu) + h(i + 1, j + 1) * fu) * fv
+    return (FLAT ? 0 : PLANET_R) + (h(i, j) * (1 - fu) + h(i + 1, j) * fu) * (1 - fv) + (h(i, j + 1) * (1 - fu) + h(i + 1, j + 1) * fu) * fv
   }
 
   // Points the camera from `eye` at `look` with a vertical field of view of
@@ -530,7 +537,7 @@ export function installDevTools(fungoid: Fungoid) {
 
   // The garden year by year from fungoid.ecoLog: colonies alive (mean), living
   // cells (least..most), fruit bodies (mean), births, deaths, lineages seen
-  fungoid.ecoSummary = (year = 24000) => {
+  fungoid.ecoSummary = (year = YEAR) => {
     const years: Record<number, { n: number; alive: number; lo: number; hi: number; fruits: number; born: number; died: number; lineages: Set<string> }> = {}
     let prev = new Set<number>()
     for (const e of (fungoid.ecoLog ?? []) as { step: number; orgs: [number, string, number, number][] }[]) {
@@ -631,9 +638,9 @@ export function installDevTools(fungoid: Fungoid) {
     // (a frame's passes looking at the whole planet, and close in over its
     // ground)
     const cam = { ...fungoid.cam, target: [...fungoid.cam.target] }
-    Object.assign(fungoid.cam, { target: [0, 0, 0], height: 40, yaw: Math.PI / 4, pitch: 0.52 })
+    Object.assign(fungoid.cam, { ...WHOLE, yaw: Math.PI / 4, pitch: 0.52 })
     out.frame = await fungoid.timing()
-    Object.assign(fungoid.cam, { target: [0, PLANET_R + 1, 0], height: 12, yaw: Math.PI / 4, pitch: 1.1 })
+    Object.assign(fungoid.cam, { target: FLAT ? [0, 2, 0] : [0, PLANET_R + 1, 0], height: 12, yaw: Math.PI / 4, pitch: 1.1 })
     out.close = await fungoid.timing()
     Object.assign(fungoid.cam, cam)
     for (const chunk of [16, 256]) {

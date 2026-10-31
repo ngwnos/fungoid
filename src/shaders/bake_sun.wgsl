@@ -37,7 +37,10 @@ fn march(p: vec3f, d: vec3f, maxT: f32) -> vec2f {
   for (var i = 0; i < 160; i++) {
     if (t > maxT) { break; }
     let q = p + d * t;
-    if (dot(q, q) > SKY_R * SKY_R) { break; }
+    if (leftAir(q)) {
+      T *= exitTint(q);
+      break;
+    }
     let uvw = volUVW(q);
     let v = textureSampleLevel(vol, linSamp, uvw, 0.0);
     let thk = mossThickAt(textureSampleLevel(aux, linSamp, uvw, 0.0));
@@ -80,18 +83,15 @@ fn bakeLight(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(outLight, gid, vec4f(0.0, sky / f32(DIRS), 0.0, 1.0));
 }
 
-// The sun's light, with the sun at sun.dir: none where the planet itself
-// stands in the way (cheaply: the sphere well inside its ground), else a
-// march towards it.
+// The sun's light, with the sun at sun.dir: none where the world itself
+// stands in the way (sunBlocked: cheaply), else a march towards it.
 @compute @workgroup_size(4, 4, 4)
 fn bakeSunVis(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid >= LIGHT_RES)) { return; }
   let p = cellPos(gid);
   let L = sun.dir.xyz;
-  let core = PLANET_R - 3.0;
-  let hit = sphereHit(p, L, core);
   var v = 0.0;
-  if (dot(p, p) > core * core && !(hit.x <= hit.y && hit.y > 0.0)) { v = march(p, L, 60.0).x; }
+  if (!sunBlocked(p, L)) { v = march(p, L, 60.0).x; }
   textureStore(outVis, gid, vec4f(v, 0.0, 0.0, 1.0));
 }
 
