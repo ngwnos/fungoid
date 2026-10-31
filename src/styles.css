@@ -1,0 +1,435 @@
+:root {
+  --bg: #0b0a09;
+  --panel: rgba(18, 16, 14, 0.78);
+  --line: rgba(255, 244, 228, 0.09);
+  --text: #e9e2d6;
+  --dim: #9a9185;
+  --accent: #e8b56a;
+  --second: #8fb7e8;
+  color-scheme: dark;
+  font: 12px/1.4 ui-sans-serif, -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.app {
+  position: relative;
+  height: 100%;
+}
+
+.viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+
+.viewport:active {
+  cursor: grabbing;
+}
+
+.error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 16px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.panel {
+  position: absolute;
+  top: 12px;
+  bottom: calc(var(--history-h, 40px) + 24px);
+  width: 248px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel.left {
+  left: 12px;
+}
+
+.panel.right {
+  right: 12px;
+  width: 272px;
+  overflow-y: auto;
+  padding: 12px 14px 16px;
+  display: block;
+}
+
+header {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+h2 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+h3 {
+  margin: 14px 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.stats {
+  margin-top: 4px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.shelf {
+  user-select: none;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.shelf li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shelf li:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.shelf li.sel {
+  background: rgba(232, 181, 106, 0.14);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.shelf li.sec {
+  background: rgba(143, 183, 232, 0.12);
+  box-shadow: inset 2px 0 0 var(--second);
+}
+
+.swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.actions {
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+}
+
+.row > * {
+  flex: 1;
+  min-width: 0;
+}
+
+button,
+select {
+  font: inherit;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled),
+select:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.gene {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+  color: var(--dim);
+}
+
+.gene span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track {
+  position: relative;
+  height: 18px;
+}
+
+.track i {
+  position: absolute;
+  top: 13px;
+  width: 2px;
+  height: 5px;
+  margin-left: -1px;
+  background: var(--dim);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+input[type='range'] {
+  width: 100%;
+  margin: 0;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.empty {
+  color: var(--dim);
+  margin: 4px 0;
+}
+
+.timeline {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--history-h, 40px) + 20px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  width: min(520px, calc(100% - 24px));
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.tools {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--history-h, 40px) + 72px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.tools button[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.tools label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.tools input {
+  width: 96px;
+}
+
+.timeline > * {
+  flex: 1;
+}
+
+.timeline span {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  width: 64px;
+}
+
+details {
+  border-top: 1px solid var(--line);
+  padding: 6px 0 4px;
+}
+
+summary {
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+
+.timeline select {
+  width: auto;
+}
+
+/* the garden's history (Timeline.tsx) */
+.history {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 14px;
+  padding: 8px 12px 8px 8px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  user-select: none;
+}
+
+.history .legend {
+  flex: none;
+  width: 136px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-size: 10px;
+}
+
+.history .legend button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 14px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history .legend button:hover {
+  background: rgba(255, 244, 228, 0.06);
+  color: var(--text);
+}
+
+.history .legend button.off {
+  opacity: 0.4;
+}
+
+.history .legend span {
+  flex: 1;
+}
+
+.history .legend em {
+  font-style: normal;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* the legend's marks: filled, a line, a dashed line */
+.history .legend i {
+  flex: none;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.history .legend i.fill {
+  height: 8px;
+  border-radius: 2px;
+  border-top: 2px solid currentColor;
+  background: color-mix(in srgb, currentColor 35%, transparent);
+}
+
+.history .legend i.dash {
+  background: linear-gradient(90deg, currentColor 0 4px, transparent 4px 6px, currentColor 6px);
+}
+
+.history .legend .now {
+  margin-top: 4px;
+  padding: 0 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.history .area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* (out over the padding by gpu/graph.ts GRAPH_PAD: the graph's columns
+   span the area, the playhead's knob has room at the ends) */
+.history canvas {
+  display: block;
+  width: calc(100% + 14px);
+  margin: 0 -7px;
+}
+
+.history .years i {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.history .years span {
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
